@@ -1,0 +1,76 @@
+en_te_text: &en_te_text
+   data: /gscratch/argon/oahia/projects/grad_tokenizer/dynamic-pooling/data/oscar_data/
+   language_to_script:
+      en: latin
+      fr: latin
+      es: latin
+      te: deva
+      hi: deva
+      bn: deva
+      uk: cyrl
+      ru: cyrl
+      be: cyrl
+
+
+model: &model
+   d_model: 768
+   n_head: 12
+   d_head: 64
+   d_inner: 3072
+   dropout: 0.1
+   dropatt: 0.1
+   pre_lnorm: false
+   model_config: "[2, (12,), 2]"
+   activation_function: gelu
+   shuffle: true
+   roll: true
+   nw: 8
+   fp16: true
+   boundary_supervision: False
+
+boundaries: &boundaries
+   boundaries_type: 'gumbel'
+   fixed_sf: 2
+   spikes_left: 2
+   temp: 0.5
+   prior_one: 0.5
+   prior_two: 0.2
+   script_tokens: "latin,deva,cyrl"
+   prior_list: "0.2,0.08,0.1"
+
+eval: &eval
+   eval_interval: 1000
+   eval_max_steps: 5000
+   eval_tgt_len: 512
+   eval_total_len: 2048
+
+optim: &optim
+   optim: adam
+   scheduler: cosine
+   #lr: 0.00025
+   lr: 5e-5
+   warmup_step: 6000
+   clip: 0.25
+   weight_decay: 0
+   adam_b1: 0.9
+   adam_b2: 0.999
+   adam_eps: 1e-8
+
+train: &train
+   max_train_steps: 300000
+   batch_size: 64
+   seq_len: 512
+   line_by_line: true
+   gradient_accumulation_steps: 2
+   num_warmup_steps: 9000
+   checkpointing_steps: "10000"
+   num_train_epochs: 2
+
+default:
+   train:
+      <<: *en_te_text
+      <<: *model
+      <<: *boundaries
+      <<: *eval
+      <<: *optim
+      <<: *train
