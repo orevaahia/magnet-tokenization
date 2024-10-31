@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from shortening import downsample, upsample
+from utils import compute_mean_with_padding
 
 
 @torch.jit.script
@@ -558,3 +559,31 @@ class MagnetTransformerLM(nn.Module):
             return torch.cat(final_hidden, dim=1), overall_stats, final_loss_boundaries
 
 
+class MagnetAverageSingleInputWithPadding(nn.Module):
+    """
+    Sequence classification over Single Inputs sequences.
+    We take the average of token-level representations without including padded tokens
+
+    """
+    # compute loss over non-padded tokens
+    def __init__(self, num_labels, pretrained_mem_transformer):
+        super(MagnetAverageSingleInputWithPadding, self).__init__()
+        self.memtransformer = pretrained_mem_transformer
+        self.score = nn.Linear(pretrained_mem_transformer.d_model, num_labels, bias=False)
+        self.num_labels = num_labels
+        self.fct = nn.CrossEntropyLoss()
+
+    def forward(self, input_batch):
+        # get the number of in
+        hidden_states, stats, boundary_loss = self.memtransformer(input_batch["input_ids"], input_batch["input_ids"].clone(), task="class")
+        #hidden_states, stats, boundary_loss = self.memtransformer(input_batch, task="class")
+        # Compute mean without considering padding
+
+        hidden_states = hidden_states.permute(1, 0, 2)
+        hidden_states = compute_mean_with_padding(hidden_states, input_batch["attention_mask"])
+
+        #hidden_states = torch.mean(hidden_states, dim=0)
+        logits = self.score(hidden_states)
+        loss = self.fct(logits.view(-1, self.num_labels), input_batch["labels"].view(-1))
+
+        return loss, logits, stats, boundary_loss

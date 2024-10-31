@@ -1,22 +1,34 @@
 import os
 import numpy as np
+import torch
+import random
 
+from ast import literal_eval
 from itertools import chain
 from pathlib import Path
 from typing import Optional, Dict
 
 from accelerate import Accelerator
+from accelerate.logging import get_logger
 from datasets import load_dataset, interleave_datasets
 from datasets import DatasetDict
 from dataclasses import dataclass
 from transformers import  AutoTokenizer
 
 
+
+logger = get_logger(__name__)
+
 BYTE_MODEL="google/byt5-small"
 CACHE_DIR="cache"
 SEED=42
 
 np.set_printoptions(suppress=True)
+
+def dinsert_special_token_ids(example, script_id):
+    example["input_ids"].insert(0, script_id)
+    return example
+
 
 def dinsert_special_token(example, script_id ):
     """
@@ -111,4 +123,82 @@ class MagnetDataset(object):
 
     def tokenize_group_function(self, examples):
         return self.vocab.tokenizer(examples["text"], return_special_tokens_mask=True)
+
+
+
+
+class JointInputcorpus(object):
+    def __init__(self,  language,
+                        dataset_name,
+                        tokenizer,
+                        max_seq_length,
+                        accelerator,
+                        cache_dir,
+                        model_type,
+                        language_to_script_id: Optional[str] = None):
+        self.tokenizer = tokenizer
+        self.max_seq_length = max_seq_length
+        self.language_to_script_id = language_to_script_id
+
+        if dataset_name == "xnli":
+            if language not in ["bn", "te"]:
+                dataset = load_dataset(
+                    "xnli",
+                    language,
+                    cache_dir=cache_dir)
+            else:
+                dataset = load_dataset(
+                        "Divyanshu/indicxnli",
+                        language,
+                        cache_dir=cache_dir
+                    )
+            # Log a few random samples from the training set:
+            train_data = dataset["train"]
+            for index in random.sample(range(len(train_data)), 3):
+                logger.info(f"Sample {index} of the training set: {train_data[index]}.")
+
+            with accelerator.main_process_first():
+                tokenized_datasets = dataset.map(
+                self.preprocess,
+                batched=True,
+                desc=f"Running tokenizer on {dataset_name} and language {language} train dataset",
+                fn_kwargs={"dataset_name": dataset_name})
+                if self.language_to_script_id is not None and model_type == "routing":
+                    tokenized_datasets = tokenized_datasets.map(dinsert_special_token_ids,  fn_kwargs={"script_id": self.language_to_script_id[language]} )
+
+        elif dataset_name == "paws-x":
+            dataset = load_dataset("paws-x", language, cache_dir=cache_dir)
+            with accelerator.main_process_first():
+                tokenized_datasets = dataset.map(
+                self.preprocess,
+                batched=True,
+                desc=f"Running tokenizer on {dataset_name} train dataset",
+                fn_kwargs={"dataset_name": dataset_name})
+                if self.language_to_script_id is not None and model_type == "routing":
+                    tokenized_datasets = tokenized_datasets.map(dinsert_special_token_ids,  fn_kwargs={"script_id": self.language_to_script_id[language]} )
+
+        label_list = dataset["train"].unique("label")
+        label_list.sort()  # Let's sort it for determinism
+        self.num_labels = len(label_list)
+
+        self.train_dataset = tokenized_datasets["train"]
+        self.validation_dataset = tokenized_datasets["validation"]
+        self.test_dataset = tokenized_datasets["test"]
+
+
+    def preprocess(self, examples, dataset_name):
+        if dataset_name == "xnli":
+            return self.tokenizer(examples["premise"],
+                                    examples["hypothesis"],
+                                    padding="max_length",
+                                    max_length=self.max_seq_length,
+                                    truncation=True)
+
+        elif dataset_name == "paws-x":
+            return self.tokenizer(examples["sentence1"],
+                                    examples["sentence2"],
+                                        padding="max_length",
+                                        max_length=self.max_seq_length,
+                                        truncation=True)
+
 

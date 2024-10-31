@@ -23,10 +23,16 @@ The config files are located in `configs/`.  The main section to be modified her
 
 # Training
 ```
-# With Magnet:
 bash scripts/run_train.sh
 ```
 
 # Downstream evaluation
+For dowsntream evaluation, you only need to add the path to the pretrained model in the downstream config files. in `ds_configs/`.
+```
+# XNLI
+bash ds_scripts/xnli_routing_124.sh
 
+# PAWS-X
+bash ds_scripts/pawsx_routing_5_10_21.sh
+```
 
