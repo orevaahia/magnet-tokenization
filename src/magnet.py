@@ -247,6 +247,9 @@ class BoundaryPredictor(nn.Module):
         return soft_boundaries, hard_boundaries
 
     def calc_loss_without_padding(self, preds, gt, attention_mask):
+        """
+
+        """
         # B x T
         if self.bp_type in ['entropy', 'unigram']:
             assert preds is not None and gt is not None
@@ -261,15 +264,21 @@ class BoundaryPredictor(nn.Module):
             # apply the mask to predictions
             masked_preds = preds * mask.float()
 
+            # Compute the sum of predictions for each example in the batch
+            sum_preds = masked_preds.sum(dim=-1).unsqueeze(dim=-1)
+
+            # Compute the total count of trials for each example in the batch
+            total_count = mask.sum(dim=-1, keepdim=True).float()  # Number of non-padded tokens
+
             # compute the sum of predictions for each example in the batch
             # sum_preds = masked_preds.sum(dim=1)
             binomial = torch.distributions.binomial.Binomial(
-                    preds.size(-1),
+                    total_count,
                     probs=torch.Tensor([self.prior]).to(preds.device)
                 )
             loss_boundaries = -binomial.log_prob(
-                    masked_preds.sum(dim=-1)
-                ).mean() / preds.size(-1)
+                    sum_preds
+                ).mean()
 
             return loss_boundaries
 
@@ -312,8 +321,6 @@ class BoundaryPredictor(nn.Module):
         }
 
         return stats
-
-
 
 class MagnetTransformerLM(nn.Module):
     def __init__(self, n_token, n_head, d_model, d_head, d_inner,
@@ -431,8 +438,29 @@ class MagnetTransformerLM(nn.Module):
 
         return total
 
+    def compute_compression_rate(self, hard_boundaries, attention_mask):
+        # Create a mask based on attention_mask
+        mask = attention_mask.eq(1)  # Mask is True where tokens are present, False for padding
 
-    def compute_boundaries_in_parallel(self, hidden, dtype, boundary_predictor, device):
+        # Apply the mask to hard_boundaries
+        masked_hard_boundaries = hard_boundaries * mask.float()
+
+        # Compute the total number of non-padded positions for each row in the batch
+        num_non_padded_positions_per_row = mask.sum(dim=1).float()  # Count the number of non-padded positions for each row
+
+        # Compute the sum of predictions only on non-padded positions for each row in the batch
+        sum_hard_boundaries_non_padded_per_row = masked_hard_boundaries.sum(dim=1)  # Sum of hard_boundaries for each row
+
+        # Compute the compression_rate only on non-padded positions for each row in the batch
+        compression_rate = (num_non_padded_positions_per_row / sum_hard_boundaries_non_padded_per_row).mean()
+        p_ones = (sum_hard_boundaries_non_padded_per_row / num_non_padded_positions_per_row).mean()
+
+
+        return compression_rate, p_ones
+
+
+
+    def compute_boundaries_in_parallel(self, hidden, dtype, boundary_predictor, attention_mask, device):
         stats = {}
         loss_boundaries = torch.tensor(0, dtype=dtype, device=device)
         residual = None
@@ -454,9 +482,12 @@ class MagnetTransformerLM(nn.Module):
                 hidden = self.down_ln(hidden)
 
                 # Shortening stats
-                stats['p_ones'] = (hard_boundaries.sum() / hard_boundaries.numel()).item()
-                stats['compression_rate'] = (hard_boundaries.numel() /hard_boundaries.sum())#.item()
+                # compute stats over non-padded tokens
+                compression_rate, p_ones = self.compute_compression_rate(hard_boundaries, attention_mask)
+                stats['p_ones'] = p_ones.item()
+                stats['compression_rate'] = compression_rate.item()
                 stats['loss_boundaries'] = loss_boundaries.item()
+                #Shortened length might not really reflect true length with padding
                 stats['shortened_length'] = hidden.size(0)
 
             elif i == 2:  # Upsampling
@@ -476,65 +507,68 @@ class MagnetTransformerLM(nn.Module):
 
         return hidden, stats, soft_boundaries, hard_boundaries
 
-
-    def forward(self, data, target, task):
+    def forward(self, batch, task):
         """
         Data: Batch Size x Sequence length  --> Sequence length x Batch Size
+        Attention_mask: Batch Size x Sequence length  --> Batch Size x Sequence length
         """
-        # Pass batch here with input_ids and attention_mask
-
-        # is {data.size()}")
+        data = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
 
         # In each batch, get all the unique script ids and check that they are contained in script ids
         unique_script_ids = torch.unique(data[:, 0])
-
         assert all(value in self.script_to_id.keys() for value in unique_script_ids.tolist())
 
         # Group input ids by script_ids
         chunks = {}
         for value in unique_script_ids:
             # select tensors that have the same value (script id) in the first index
-            script_tensor = data[data[:, 0] == value]
+            script_indices = data[:, 0] == value
 
-            # Transpose and remove script ids
-            chunks[self.script_to_id[value.item()]] = script_tensor[:, 1:].T
+            # (T X B)
+            script_input_ids = data[script_indices][:, 1:]  # Input_ids for this script, remove script ids
+            script_attention_mask = attention_mask[script_indices]  # Attention mask for this script, no script ids here
+            chunks[self.script_to_id[value.item()]] = {"input_ids": script_input_ids.T, "attention_mask": script_attention_mask} # We don't transpose attention mask here, because the operations we need the masks for require that this dimension is retained
 
         # Track boundaries statistics
         overall_stats = {}
 
-        # Todo: Make this part more efficient
         final_logits, final_labels,  final_hidden, final_loss_boundaries = [], [], [], []
-        for script, input_ids in chunks.items():
+        for script, batch_dict in chunks.items():
+            attn_m = batch_dict["attention_mask"]
             # We shift the input ids by 1 when computing the loss
-            target_ids =  input_ids.clone()
+            target_ids = batch_dict["input_ids"].clone()
             tgt_len =  target_ids.size(0)
 
             # Get embeddings
-            embeddings = self.drop(self.word_emb(input_ids))
+            embeddings = self.drop(self.word_emb(batch_dict["input_ids"]))
 
             # (Tokenization happens here) Downsample and upsample representations
             hidden, stats, soft_boundaries, hard_boundaries = self.compute_boundaries_in_parallel(embeddings,
                             dtype=data.dtype,
                             boundary_predictor=self.script_to_bp_layers[script],
-                            device=data.device
-            )
-
-            if self.training or target is not None:
+                            device=data.device,
+                            attention_mask=batch_dict["attention_mask"])
             # Calculate boundary loss here
-                soft_boundaries = soft_boundaries[:, -tgt_len:]
-                hard_boundaries = hard_boundaries[:, -tgt_len:]
+            soft_boundaries = soft_boundaries[:, -tgt_len:]
+            hard_boundaries = hard_boundaries[:, -tgt_len:]
+            if task == "LM":
                 loss_boundaries = self.script_to_bp_layers[script].calc_loss(
-                            preds=hard_boundaries, gt=None
-                        )
+                                preds=hard_boundaries, gt=None
+                            )
+            else:
+                # check the shape of the attention mask
+                loss_boundaries = self.script_to_bp_layers[script].calc_loss_without_padding(preds=hard_boundaries, gt=None, attention_mask=batch_dict["attention_mask"])
 
-                # Get boundaries stats
-                bp_stats = self.script_to_bp_layers[script].calc_stats(
-                            hard_boundaries, (input_ids == 0)[-tgt_len:].transpose(0, 1)
-                        )
-
-                for k, v in stats.items():
+            # Get boundaries stats
+            # Not used for now
+            bp_stats = self.script_to_bp_layers[script].calc_stats(
+                        hard_boundaries, (batch_dict["input_ids"] == 0)[-tgt_len:].transpose(0, 1)
+                    )
+            for k, v in stats.items():
                     overall_stats[f'{script}_{k}'] = v
-                overall_stats[f'{script}_loss_boundaries'] = loss_boundaries.item()
+
+            overall_stats[f'{script}_loss_boundaries'] = loss_boundaries.item()
 
             # Get logits
             logit = self.final_cast(hidden)
@@ -558,7 +592,6 @@ class MagnetTransformerLM(nn.Module):
         else:
             return torch.cat(final_hidden, dim=1), overall_stats, final_loss_boundaries
 
-
 class MagnetAverageSingleInputWithPadding(nn.Module):
     """
     Sequence classification over Single Inputs sequences.
@@ -575,8 +608,8 @@ class MagnetAverageSingleInputWithPadding(nn.Module):
 
     def forward(self, input_batch):
         # get the number of in
-        hidden_states, stats, boundary_loss = self.memtransformer(input_batch["input_ids"], input_batch["input_ids"].clone(), task="class")
-        #hidden_states, stats, boundary_loss = self.memtransformer(input_batch, task="class")
+        #hidden_states, stats, boundary_loss = self.memtransformer(input_batch["input_ids"], input_batch["input_ids"].clone(), task="class")
+        hidden_states, stats, boundary_loss = self.memtransformer(input_batch, task="class")
         # Compute mean without considering padding
 
         hidden_states = hidden_states.permute(1, 0, 2)
