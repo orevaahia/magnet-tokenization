@@ -181,7 +181,6 @@ def main():
     accelerator_log_kwargs["project_dir"] = args.output_dir
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
 
-
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
@@ -209,10 +208,6 @@ def main():
     logging.info("----------------------------------------------------------------")
     logging.info("----------------------------------------------------------------")
     logging.info("Preparing corpus")
-
-
-    # Start the conditioning here
-
 
     # Create byte vocabulary and map scripts to their respective input ids. This is necessary for routing tokens to their boundary predictors
     vocab = MixtureByteVocab(**boundary_kwargs)
@@ -293,7 +288,6 @@ def main():
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["scheduler"]#.value
 
-
     total_batch_size = args.batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     ###########################################################################
@@ -359,8 +353,7 @@ def main():
         train_stats_agg = defaultdict(list)
         for step, batch in enumerate(tqdm(active_dataloader)):
             with accelerator.accumulate(model):
-                inputs, target  = batch["input_ids"], batch["labels"]
-                seq_loss, stats, aux_loss,  _ = model(inputs, target, "LM")
+                seq_loss, stats, aux_loss,  _ = model(batch, "LM")
 
                 # Combine auxilliary boundary predictor loss and language modelling loss
                 # Sometimes you might have only one script in a batch and the auxiliary loss might be one
