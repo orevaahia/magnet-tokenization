@@ -1,0 +1,4 @@
+slurm*
+model_ckpts/*
+src/__pycache__/*
+cache/*

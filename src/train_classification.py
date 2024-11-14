@@ -240,7 +240,7 @@ def main():
         experiment_config = vars(args)
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["scheduler"]#.value
-        accelerator.init_trackers(project_name="gradient-based-tokenization", config=experiment_config, init_kwargs={"wandb": {"entity": "orevaoghenne", "name":basename}})
+        accelerator.init_trackers(project_name="gradient-based-tokenization", config=experiment_config, init_kwargs={"wandb": {"entity": "owos", "name":basename}})
 
     # Get the metric function
     if args.dataset_name == "xnli":

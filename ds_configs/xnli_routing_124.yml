@@ -5,7 +5,7 @@ en_te_text: &en_te_text
 model: &model
   n_labels: 3
   #pretrained_path: model_ckpts/routing_three_scripts/routing_oscar_cyrl10x_latin5x_deva21x_2024-03-15_03-53-40
-  pretrained_path: model_ckpts/routing_three_scripts/routing_oscar_cyrl2x_latin1x_deva4x_2024-03-26_17-01-33
+  pretrained_path: model_ckpts/routing_oscar_cyrl6x_latin3x_deva12x
   #pretrained_path: model_ckpts/routing_three_scripts/routing_oscar_cyrl6x_latin3x_deva12x_2024-03-29_09-40-08
   model_type: routing
 
@@ -27,6 +27,7 @@ train: &train
   num_warmup_steps: 1500
   checkpointing_steps: "epoch"
   num_train_epochs: 5
+
 
 default:
   train:
