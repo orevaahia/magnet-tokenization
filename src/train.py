@@ -12,8 +12,6 @@ import utils
 import json
 import logging
 import transformers
-import wandb
-
 from datetime import datetime
 from collections import defaultdict
 from accelerate.logging import get_logger
@@ -21,7 +19,6 @@ from transformers import DataCollatorForLanguageModeling, get_scheduler
 from torch.utils.data import DataLoader
 from accelerate import Accelerator
 from tqdm import tqdm
-
 from data_utils import MagnetDataset, MixtureByteVocab
 from evaluation import evaluate_inidiv_dataset_LM
 from magnet import MagnetTransformerLM
@@ -29,7 +26,6 @@ from utils import init_seed, calculate_mean, save_args_to_json
 
 np.set_printoptions(suppress=True)
 logger = get_logger(__name__)
-
 def list_of_strings(arg):
     return arg.split(',')
 
@@ -174,13 +170,11 @@ def main():
     args.output_dir = new_path
     os.makedirs(args.output_dir, exist_ok=True)
 
-
     # Accelerate config
     accelerator_log_kwargs = {}
     accelerator_log_kwargs["log_with"] = args.report_to
     accelerator_log_kwargs["project_dir"] = args.output_dir
     accelerator = Accelerator(gradient_accumulation_steps=args.gradient_accumulation_steps, **accelerator_log_kwargs)
-
 
     # Make one log on every process with the configuration for debugging.
     logging.basicConfig(
@@ -210,18 +204,12 @@ def main():
     logging.info("----------------------------------------------------------------")
     logging.info("Preparing corpus")
 
-
-    # Start the conditioning here
-
-
     # Create byte vocabulary and map scripts to their respective input ids. This is necessary for routing tokens to their boundary predictors
     vocab = MixtureByteVocab(**boundary_kwargs)
     args.script_to_id = {vocab.tokenizer.convert_tokens_to_ids(i): i  for i in args.script_tokens}
     id_to_script = {value: key for key, value in args.script_to_id.items()}
     language_to_script_id = {lang: id_to_script[script] for lang, script in  args.language_to_script.items()}
     args.all_script_ids_dict = {j:i for i,j in zip(args.prior_list, args.script_tokens)}
-
-
     print(f"after language_to_script_id is {language_to_script_id}")
 
     # Load dataset
@@ -293,7 +281,6 @@ def main():
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["scheduler"]#.value
 
-
     total_batch_size = args.batch_size * accelerator.num_processes * args.gradient_accumulation_steps
 
     ###########################################################################
@@ -306,7 +293,6 @@ def main():
     logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {total_batch_size}")
     logger.info(f"  Gradient Accumulation steps = {args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {args.max_train_steps}")
-
     progress_bar = tqdm(range(args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
     starting_epoch = 0
@@ -332,19 +318,13 @@ def main():
         if "epoch" in training_difference:
             starting_epoch = int(training_difference.replace("epoch_", "")) + 1
             resume_step = None
-            #sth wrong here
-            #completed_steps = starting_epoch * num_update_steps_per_epoch
             completed_steps = starting_epoch #* num_update_steps_per_epoch
         else:
-            # need to multiply `gradient_accumulation_steps` to reflect real steps
-            resume_step = int(training_difference.replace("step_", "")) * args.gradient_accumulation_steps
-            starting_epoch = resume_step // len(train_dataloader)
-            completed_steps = resume_step // args.gradient_accumulation_steps
-            resume_step -= starting_epoch * len(train_dataloader)
+            resume_step = int(training_difference.replace("step_", "")) 
+            completed_steps = resume_step
 
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
-
     for epoch in range(starting_epoch, args.num_train_epochs):
         model.train()
         if args.with_tracking:
@@ -355,12 +335,10 @@ def main():
             active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
         else:
             active_dataloader = train_dataloader
-
         train_stats_agg = defaultdict(list)
-        for step, batch in enumerate(tqdm(active_dataloader)):
+        for step, batch in enumerate(tqdm(active_dataloader, disable=not accelerator.is_local_main_process)):
             with accelerator.accumulate(model):
-                inputs, target  = batch["input_ids"], batch["labels"]
-                seq_loss, stats, aux_loss,  _ = model(inputs, target, "LM")
+                seq_loss, stats, aux_loss,  _ = model(batch, "LM")
 
                 # Combine auxilliary boundary predictor loss and language modelling loss
                 # Sometimes you might have only one script in a batch and the auxiliary loss might be one
@@ -368,7 +346,7 @@ def main():
                     #loss = seq_loss + torch.stack(aux_loss).sum()
                     loss = seq_loss + torch.mean(torch.stack(aux_loss))
                 else:
-                    loss = seq_loss + aux_loss
+                    loss = seq_loss + aux_loss[0]
 
                 if args.with_tracking:
                     total_train_loss += seq_loss.detach().float()
@@ -376,7 +354,7 @@ def main():
                         total_train_aux_loss += torch.mean(torch.stack(aux_loss)).detach().float()
                         #total_train_aux_loss += torch.stack(aux_loss).sum().detach().float()
                     else:
-                         total_train_aux_loss += aux_loss.detach().float()
+                         total_train_aux_loss += aux_loss[0].detach().float()
                     total_count += 1
 
                     for k, v in stats.items():
@@ -527,4 +505,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -1,3 +1,11 @@
+#!/bin/bash
+
+conda init
+conda activate magnet
+conda env list 
+nvidia-smi
+export PYTHONPATH=.
+
 cat $0
 echo "--------------------"
 
@@ -9,10 +17,10 @@ C=ds_configs/xnli_routing_124.yml
 GPUS=4
 config_file=configs/accelerate/gpu_4.yaml
 
-SEEDS=(120)
+SEEDS=(42)
 LRS=(5e-5)
 BSZS=(32)
-LANGS=("es")
+LANGS=("en")
 
 
 for SEED in "${SEEDS[@]}";do
@@ -23,7 +31,7 @@ for SEED in "${SEEDS[@]}";do
         for BSZ in "${BSZS[@]}";do
 
             for language in "${LANGS[@]}"; do
-                work_dir="model_ckpts/downstream/xnli_joint_input_gridsearch_routing_1x_2x_4x/${language}_xnli_fixed_routing_seed${SEED}_bsz${BSZ}_lr${LR}_clip1.0_cosine_schedule"
+                work_dir="model_ckpts/downstream/xnli_joint_input_gridsearch_routing_1x_2x_4x4/${language}_xnli_fixed_routing_seed${SEED}_bsz${BSZ}_lr${LR}_clip1.0_cosine_schedule"
                 echo $work_dir
                 echo 'Finding free port'
                 PORT=$(python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()')
@@ -39,4 +47,3 @@ for SEED in "${SEEDS[@]}";do
         done
     done
 done
-

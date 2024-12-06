@@ -188,8 +188,6 @@ def main():
                     model_type=args.model_type,
                     language_to_script_id=language_to_script_id)
 
-
-
     # Save config file
     save_args_to_json(args, args.output_dir)
 
@@ -200,8 +198,8 @@ def main():
 
     # Initialize Classification model
     model = MagnetAverageSingleInputWithPadding(data_corpus.num_labels, pretrained_model)
-
     logger.info(model)
+
     optimizer = optim.Adam(model.parameters(), lr=args.lr,
                            betas=(args.adam_b1, args.adam_b2),
                            eps=args.adam_eps,
@@ -222,8 +220,7 @@ def main():
         num_warmup_steps=num_warmup_steps,
         num_training_steps=args.max_train_steps)
 
-
-    # Prepare everything with our `accelerator`.
+     # Prepare everything with our `accelerator`.
     model, optimizer, train_dataloader, eval_dataloader, test_dataloader, lr_scheduler = accelerator.prepare(
         model, optimizer, train_dataloader, eval_dataloader, test_dataloader, scheduler
     )
@@ -243,13 +240,13 @@ def main():
         experiment_config = vars(args)
         # TensorBoard cannot log Enums, need the raw value
         experiment_config["lr_scheduler_type"] = experiment_config["scheduler"]#.value
-        accelerator.init_trackers(project_name="gradient-based-tokenization", config=experiment_config, init_kwargs={"wandb": {"entity": "orevaoghenne", "name":basename}})
+        accelerator.init_trackers(project_name="gradient-based-tokenization", config=experiment_config, init_kwargs={"wandb": {"entity": "owos", "name":basename}})
 
     # Get the metric function
     if args.dataset_name == "xnli":
         metric = evaluate.load("xnli", cache_dir="cache", experiment_id=f"{basename}_xnli")
     elif args.dataset_name == "paws-x":
-        metric = evaluate.load("accuracy", cache_dir="cache",  experiment_id=f"{basename}_acc")
+        metric = evaluate.load("accuracy", cache_dir="cache", experiment_id=f"{basename}_acc")
 
     # Train!
     total_batch_size = args.batch_size * accelerator.num_processes * args.gradient_accumulation_steps
@@ -271,15 +268,16 @@ def main():
         model.train()
         if args.with_tracking:
             total_loss = 0
-
         active_dataloader = train_dataloader
         for step, batch in enumerate(active_dataloader):
             if args.joint_input:
                 classification_loss, _, stats, boundary_loss = model(batch)
                 boundary_loss = boundary_loss[0]
                 loss = classification_loss + boundary_loss
+
             else:
                 loss, _, stats = model(batch["x_ids"], batch["y_ids"], batch["labels"])
+
 
             # We keep track of the loss at each epoch
             if args.with_tracking:
@@ -328,7 +326,6 @@ def main():
         val_losses = []
         val_stats_agg = defaultdict(list)
         samples_seen = 0
-
         for step, batch in enumerate(eval_dataloader):
             with torch.no_grad():
                 if args.joint_input:
@@ -352,7 +349,6 @@ def main():
                 predictions=predictions,
                 references=references)
 
-
             for k, v in val_stats.items():
                 val_stats_agg[f"val_{k}"].append(v)
 
@@ -364,7 +360,6 @@ def main():
 
 
         eval_metric = metric.compute()
-
         logger.info(f"epoch {epoch}: valid {eval_metric} valid loss {eval_loss}")
 
         metrics_dict = {
@@ -393,9 +388,9 @@ def main():
     ##########################################
     logger.info("Evaluating test set")
     if args.dataset_name == "xnli":
-        test_metric = evaluate.load("xnli", cache_dir="cache",  experiment_id=f"{basename}_xnli")
+        test_metric = evaluate.load("xnli", cache_dir="cache", experiment_id=f"{basename}_xnli")
     elif args.dataset_name == "paws-x":
-        test_metric = evaluate.load("accuracy", cache_dir="cache",  experiment_id=f"{basename}_acc")
+        test_metric = evaluate.load("accuracy", cache_dir="cache", experiment_id=f"{basename}_acc")
 
 
     model.eval()
@@ -427,6 +422,7 @@ def main():
         # Save predictions
         all_predictions.extend(predictions)
         all_targets.extend(references)
+
 
         test_metric.add_batch(
                 predictions=predictions,
@@ -469,6 +465,17 @@ def main():
                      "valid_loss": eval_loss.item(),
                      "test_loss": final_test_loss.item()
                     }
+
+
+    # Save Test predictions
+    output_predict_file = os.path.join(args.output_dir, "predict_results.txt")
+    with open(output_predict_file, "w") as writer:
+        logger.info("***** Predict results *****")
+        writer.write("index\tprediction\treference\n")
+        for index, (pred, targ) in enumerate(zip(all_predictions, all_targets)):
+            writer.write(f"{index}\t{pred}\t{targ}\n")
+
+    logger.info("Predict results saved at {}".format(output_predict_file))
 
     if args.output_dir is not None:
         accelerator.wait_for_everyone()
